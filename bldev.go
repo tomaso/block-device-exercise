@@ -84,18 +84,30 @@ func (bd *blockDevice) Serialize() ([]blockDeviceChange, error) {
 
 /*
 * Deserialize
+(this is not a method of blockDevice, it's a global function because it creates an instance of blockDevice,
+i.e. this is a _factory_ method)
 
 ** Takes a byte slice created by Serialize and the initial data
 ** Creates a new block device backend
 ** It will deserialize the changes and load them on top of the initial data
- */
-func (bd *blockDevice) Deserialize(changes []blockDeviceChange, initData []byte) error {
-	bd.Data = initData
+*/
+func Deserialize(changes []blockDeviceChange, initData []byte) (blockDevice, error) {
+	bd := blockDevice{Data: initData}
 	for _, change := range changes {
 		err := bd.WriteAt(change.Offset, change.Data)
 		if err != nil {
-			return err
+			return bd, err
 		}
 	}
-	return nil
+	return bd, nil
+}
+
+/* Debug helper function. Can be slow.
+* Returns a copy of the backend data. It's the backened data
+* with the changes layed "on top" of it.
+ */
+func (bd *blockDevice) Dump() []byte {
+	c := make([]byte, len(bd.Data))
+	copy(c, bd.Data)
+	return c
 }
