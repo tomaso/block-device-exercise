@@ -4,14 +4,18 @@ import (
 	"fmt"
 )
 
+const BLOCK_SIZE = 4
+
 type blockDevice struct {
 	// Data of the block device
-	Data []byte
+	Initialized bool
+	Data        []byte
+	Changes     map[int]blockDeviceChange // block (offset % BLOCK_SIZE) -> block data
 }
 
 type blockDeviceChange struct {
 	Offset int
-	Data   []byte
+	Data   [BLOCK_SIZE]byte
 }
 
 /*
@@ -24,7 +28,12 @@ type blockDeviceChange struct {
  */
 /* We assume here that the data will be owned by the block device and that it will not be modified outside of the block device */
 func (bd *blockDevice) Initialize(initData []byte) error {
+	if bd.Initialized {
+		return fmt.Errorf("Block device already initialized")
+	}
 	bd.Data = initData
+	bd.Changes = make(map[int]blockDeviceChange)
+	bd.Initialized = true
 	return nil
 }
 
@@ -35,6 +44,9 @@ func (bd *blockDevice) Initialize(initData []byte) error {
 ** Assume that the offset and length to read will always be a multiple of the “block size”
  */
 func (bd *blockDevice) ReadAt(offset int, buffer []byte, length int) error {
+	if !bd.Initialized {
+		return fmt.Errorf("Block device needs to be initialized first")
+	}
 	if offset < 0 || offset >= len(bd.Data) {
 		return fmt.Errorf("invalid offset")
 	}
@@ -55,6 +67,13 @@ func (bd *blockDevice) ReadAt(offset int, buffer []byte, length int) error {
 ** Assume that the offset and length to write will always be a multiple of the “block size”
  */
 func (bd *blockDevice) WriteAt(offset int, buffer []byte) error {
+	if !bd.Initialized {
+		return fmt.Errorf("Block device needs to be initialized first")
+	}
+	if len(buffer)%BLOCK_SIZE != 0 {
+		return fmt.Errorf("The buffer length is not multiple of BLOCK_SIZE")
+	}
+
 	length := len(buffer)
 
 	if offset < 0 || offset >= len(bd.Data) {
@@ -66,7 +85,17 @@ func (bd *blockDevice) WriteAt(offset int, buffer []byte) error {
 	if offset+length > len(bd.Data) {
 		return fmt.Errorf("write beyond device bounds")
 	}
-	copy(bd.Data[offset:offset+length], buffer)
+
+	for i := 0; i*BLOCK_SIZE <= length; i++ {
+		change, exists := bd.Changes[i]
+		if exists {
+			copy(change.Data[:], buffer[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE])
+		} else {
+			change.Offset = i * BLOCK_SIZE
+			copy(change.Data[:], buffer[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE])
+		}
+	}
+
 	return nil
 }
 
@@ -77,6 +106,9 @@ func (bd *blockDevice) WriteAt(offset int, buffer []byte) error {
 ** The format should have the smallest possible overhead
  */
 func (bd *blockDevice) Serialize() ([]blockDeviceChange, error) {
+	if !bd.Initialized {
+		return nil, fmt.Errorf("Block device needs to be initialized first")
+	}
 
 	// return []blockDeviceChange{blockDeviceChange{Offset: 0, Data: bd.Data}}, nil
 	return nil, nil
@@ -92,9 +124,10 @@ i.e. this is a _factory_ method)
 ** It will deserialize the changes and load them on top of the initial data
 */
 func Deserialize(changes []blockDeviceChange, initData []byte) (blockDevice, error) {
-	bd := blockDevice{Data: initData}
+	bd := blockDevice{}
+	bd.Initialize(initData)
 	for _, change := range changes {
-		err := bd.WriteAt(change.Offset, change.Data)
+		err := bd.WriteAt(change.Offset, change.Data[:])
 		if err != nil {
 			return bd, err
 		}
@@ -109,5 +142,9 @@ func Deserialize(changes []blockDeviceChange, initData []byte) (blockDevice, err
 func (bd *blockDevice) Dump() []byte {
 	c := make([]byte, len(bd.Data))
 	copy(c, bd.Data)
+	for _, change := range bd.Changes {
+		offset := change.Offset
+		copy(c[offset:], change.Data[:])
+	}
 	return c
 }
