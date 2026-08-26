@@ -4,8 +4,6 @@ import (
 	"fmt"
 )
 
-const BLOCK_SIZE = 4
-
 type blockDevice struct {
 	// Data of the block device
 	Initialized bool
@@ -56,7 +54,26 @@ func (bd *blockDevice) ReadAt(offset int, buffer []byte, length int) error {
 	if offset+length > len(bd.Data) {
 		return fmt.Errorf("read beyond device bounds")
 	}
-	copy(buffer, bd.Data[offset:offset+length])
+	if len(buffer)%BLOCK_SIZE != 0 {
+		return fmt.Errorf("The buffer length %d is not multiple of BLOCK_SIZE: %d", len(buffer), BLOCK_SIZE)
+	}
+	if offset%BLOCK_SIZE != 0 {
+		return fmt.Errorf("The offset %d is not multiple of BLOCK_SIZE: %d", offset, BLOCK_SIZE)
+	}
+	if length%BLOCK_SIZE != 0 {
+		return fmt.Errorf("The length %d is not multiple of BLOCK_SIZE: %d", length, BLOCK_SIZE)
+	}
+
+	block_index_offset := offset / BLOCK_SIZE
+	for i := 0; i < length/BLOCK_SIZE; i++ {
+		change, exists := bd.Changes[i+block_index_offset]
+		if exists {
+			copy(buffer[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE], change.Data[:])
+		} else {
+			copy(buffer[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE], bd.Data[offset:offset+length])
+		}
+	}
+
 	return nil
 }
 
@@ -71,7 +88,10 @@ func (bd *blockDevice) WriteAt(offset int, buffer []byte) error {
 		return fmt.Errorf("Block device needs to be initialized first")
 	}
 	if len(buffer)%BLOCK_SIZE != 0 {
-		return fmt.Errorf("The buffer length is not multiple of BLOCK_SIZE")
+		return fmt.Errorf("The buffer length %d is not multiple of BLOCK_SIZE: %d", len(buffer), BLOCK_SIZE)
+	}
+	if offset%BLOCK_SIZE != 0 {
+		return fmt.Errorf("The offset %d is not multiple of BLOCK_SIZE: %d", offset, BLOCK_SIZE)
 	}
 
 	length := len(buffer)
@@ -86,15 +106,19 @@ func (bd *blockDevice) WriteAt(offset int, buffer []byte) error {
 		return fmt.Errorf("write beyond device bounds")
 	}
 
-	for i := 0; i*BLOCK_SIZE <= length; i++ {
-		change, exists := bd.Changes[i]
+	block_index_offset := offset / BLOCK_SIZE
+	for i := 0; i < length/BLOCK_SIZE; i++ {
+		// fmt.Printf("i: %d\n", i)
+		change, exists := bd.Changes[i+block_index_offset]
 		if exists {
 			copy(change.Data[:], buffer[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE])
 		} else {
-			change.Offset = i * BLOCK_SIZE
+			change.Offset = (i + block_index_offset) * BLOCK_SIZE
 			copy(change.Data[:], buffer[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE])
+			bd.Changes[i+block_index_offset] = change
 		}
 	}
+	// fmt.Printf("bd.Changes: %v\n", bd.Changes)
 
 	return nil
 }
@@ -140,11 +164,16 @@ func Deserialize(changes []blockDeviceChange, initData []byte) (blockDevice, err
 * with the changes layed "on top" of it.
  */
 func (bd *blockDevice) Dump() []byte {
+	// fmt.Printf("Dump(): length: %d \n", len(bd.Changes))
+	// fmt.Printf("Dump() : %d \n", len(bd.Changes))
 	c := make([]byte, len(bd.Data))
 	copy(c, bd.Data)
 	for _, change := range bd.Changes {
+		// fmt.Printf("Dump(): k: %d, BLOCK_SIZE: %d, change.Offset: %d, change.Data: %v\n", k, BLOCK_SIZE, change.Offset, change.Data)
 		offset := change.Offset
+		// fmt.Printf("Dump() before copy: c: %v\n", c)
 		copy(c[offset:], change.Data[:])
+		// fmt.Printf("Dump()  after copy: c: %v\n", c)
 	}
 	return c
 }
