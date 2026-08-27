@@ -1,6 +1,7 @@
 package bldev
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -202,72 +203,91 @@ func TestBlockDeviceWriteAt_MultipleWrites(t *testing.T) {
 	}
 }
 
-// func TestBlockDeviceSerialize(t *testing.T) {
-// 	// Test scenarios table
-// 	tests := []struct {
-// 		name     string // Name of the scenario
-// 		initData []byte // Initial data for the block device
-// 		expOut   []blockDeviceChange
-// 		wantErr  bool
-// 	}{
-// 		{
-// 			name:     "Serialize returns expected output",
-// 			initData: nil,
-// 			expOut:   []blockDeviceChange{},
-// 			wantErr:  false,
-// 		},
-// 	}
-// 	for _, tt := range tests {
-// 		t.Run(tt.name, func(t *testing.T) {
-// 			bd := &blockDevice{}
-// 			bd.Initialize(tt.initData)
+func TestBlockDeviceWriteAtReadAt(t *testing.T) {
+	tests := []struct {
+		name                 string // Name of the scenario
+		initData             []byte // Initial data for the block device
+		write_offset         int
+		write_buffer         []byte
+		read_offset          int
+		read_length          int
+		read_buffer_expected []byte
+	}{
+		{
+			name:                 "Write and Read back",
+			initData:             []byte{'p', 'o', 't', 'a', 't', 'o', ' ', 's', 'a', 'l', 'a', 'd'},
+			write_offset:         BLOCK_SIZE,
+			write_buffer:         []byte{'a', 's', 'd', 'f'},
+			read_offset:          0,
+			read_length:          BLOCK_SIZE * 2,
+			read_buffer_expected: []byte{'p', 'o', 't', 'a', 'a', 's', 'd', 'f'},
+		},
+	}
 
-// 			changes, err := bd.Serialize()
-// 			if (err == nil) && !tt.wantErr {
-// 				for i, _ := range changes {
-// 					if changes[i].Offset != tt.expOut[i].Offset || changes[i].Data == tt.expOut[i].Data {
-// 						t.Errorf(
-// 							"Expected change %d: (offset: %d, bytes: %v), but we got: (offset: %d, bytes: %v)",
-// 							i, tt.expOut[i].Offset, tt.expOut[i].Data, changes[i].Offset, changes[i].Data)
-// 					}
-// 				}
-// 			} else {
-// 				t.Errorf("Error occured: %v", err)
-// 			}
-// 		})
-// 	}
-// }
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bd := &blockDevice{}
+			bd.Initialize(tt.initData)
 
-// func TestBlockDeviceDeserialize(t *testing.T) {
-// 	tests := []struct {
-// 		name              string
-// 		initSerializeData []byte
-// 		bdcSerialize      []blockDeviceChange
-// 		expData           []byte // Expected data in the newly constructed blockDevice
-// 	}{
-// 		{
-// 			name:              "Deserialize creates expected block device",
-// 			initSerializeData: []byte{'p', 'o', 't', 'a', 't', 'o', ' ', 's', 'a', 'l', 'a', 'd'},
-// 			bdcSerialize: []blockDeviceChange{
-// 				{Offset: 0, Data: [4]byte{'a', 'b', 'c', 'd'}},
-// 				{Offset: 4, Data: [4]byte{'e', 'f', 'g', 'h'}},
-// 			},
-// 			expData: []byte{'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'a', 'l', 'a', 'd'},
-// 		},
-// 	}
-// 	for _, tt := range tests {
-// 		t.Run(tt.name, func(t *testing.T) {
-// 			bd, err := Deserialize(tt.bdcSerialize, tt.initSerializeData)
-// 			if err != nil {
-// 				t.Errorf("Deserialization failed: %v", err)
-// 			}
-// 			dumpedBytes := bd.Dump()
-// 			if !bytes.Equal(tt.expData, dumpedBytes) {
-// 				t.Errorf(
-// 					"Expected data from deserialize: %v, actual dump of the blockDevice: %v",
-// 					string(tt.expData), string(dumpedBytes),
-// 				)
-// 			}
-// 		})
-// 	}
-// }
+			bd.WriteAt(tt.write_offset, tt.write_buffer)
+			var buf [8]byte
+			bd.ReadAt(tt.read_offset, buf[:], 8)
+			if !bytes.Equal(buf[:], tt.read_buffer_expected) {
+				t.Errorf("The read data: %v is not as expected: %v", buf, tt.read_buffer_expected)
+			}
+		})
+	}
+}
+
+func TestBlockDeviceSerDeser(t *testing.T) {
+	tests := []struct {
+		name                 string
+		initData             []byte
+		write_offset         int
+		write_buffer         []byte
+		read_offset          int
+		read_length          int
+		read_buffer_expected []byte
+		expData              []byte // Expected data in the newly constructed blockDevice
+	}{
+		{
+			name:                 "Deserialize creates expected block device",
+			initData:             []byte{'p', 'o', 't', 'a', 't', 'o', ' ', 's', 'a', 'l', 'a', 'd'},
+			write_offset:         BLOCK_SIZE,
+			write_buffer:         []byte{'a', 's', 'd', 'f'},
+			read_offset:          0,
+			read_length:          BLOCK_SIZE * 3,
+			read_buffer_expected: []byte{'p', 'o', 't', 'a', 'a', 's', 'd', 'f', 'a', 'l', 'a', 'd'},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bd := &blockDevice{}
+			bd.Initialize(tt.initData)
+			err := bd.WriteAt(tt.write_offset, tt.write_buffer)
+			if err != nil {
+				t.Errorf("Unexpected failure of WriteAt()")
+			}
+
+			changes, err := bd.Serialize()
+			if err != nil {
+				t.Errorf("Serialize() failed: %v", err)
+			}
+
+			bd2, err := Deserialize(changes, tt.initData)
+			if err != nil {
+				t.Errorf("Deserialize() failed: %v", err)
+			}
+			read_buf := make([]byte, tt.read_length)
+			if err := bd2.ReadAt(tt.read_offset, read_buf, tt.read_length); err != nil {
+				t.Errorf("Unexpected failure of ReadAt()")
+			}
+			if !bytes.Equal(tt.read_buffer_expected, read_buf) {
+				t.Errorf(
+					"Expected data: %v, actual data from ReadAt() of deserialized block device: %v",
+					string(tt.read_buffer_expected), string(read_buf),
+				)
+			}
+		})
+	}
+}

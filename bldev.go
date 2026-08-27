@@ -1,6 +1,8 @@
 package bldev
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 )
 
@@ -8,11 +10,11 @@ type blockDevice struct {
 	// Data of the block device
 	Initialized bool
 	Data        []byte
-	Changes     map[int]blockDeviceChange // block (offset % BLOCK_SIZE) -> block data
+	Changes     map[int64]blockDeviceChange // block (offset % BLOCK_SIZE) -> block data
 }
 
 type blockDeviceChange struct {
-	Offset int
+	Offset int64
 	Data   [BLOCK_SIZE]byte
 }
 
@@ -30,7 +32,7 @@ func (bd *blockDevice) Initialize(initData []byte) error {
 		return fmt.Errorf("Block device already initialized")
 	}
 	bd.Data = initData
-	bd.Changes = make(map[int]blockDeviceChange)
+	bd.Changes = make(map[int64]blockDeviceChange)
 	bd.Initialized = true
 	return nil
 }
@@ -66,11 +68,12 @@ func (bd *blockDevice) ReadAt(offset int, buffer []byte, length int) error {
 
 	block_index_offset := offset / BLOCK_SIZE
 	for i := 0; i < length/BLOCK_SIZE; i++ {
-		change, exists := bd.Changes[i+block_index_offset]
+		change, exists := bd.Changes[int64(i+block_index_offset)]
 		if exists {
 			copy(buffer[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE], change.Data[:])
 		} else {
-			copy(buffer[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE], bd.Data[offset:offset+length])
+			data_offset := offset + i*BLOCK_SIZE
+			copy(buffer[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE], bd.Data[data_offset:data_offset+BLOCK_SIZE])
 		}
 	}
 
@@ -108,17 +111,15 @@ func (bd *blockDevice) WriteAt(offset int, buffer []byte) error {
 
 	block_index_offset := offset / BLOCK_SIZE
 	for i := 0; i < length/BLOCK_SIZE; i++ {
-		// fmt.Printf("i: %d\n", i)
-		change, exists := bd.Changes[i+block_index_offset]
+		change, exists := bd.Changes[int64(i+block_index_offset)]
 		if exists {
 			copy(change.Data[:], buffer[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE])
 		} else {
-			change.Offset = (i + block_index_offset) * BLOCK_SIZE
+			change.Offset = int64((i + block_index_offset) * BLOCK_SIZE)
 			copy(change.Data[:], buffer[i*BLOCK_SIZE:(i+1)*BLOCK_SIZE])
-			bd.Changes[i+block_index_offset] = change
+			bd.Changes[int64(i+block_index_offset)] = change
 		}
 	}
-	// fmt.Printf("bd.Changes: %v\n", bd.Changes)
 
 	return nil
 }
@@ -129,13 +130,26 @@ func (bd *blockDevice) WriteAt(offset int, buffer []byte) error {
 ** Return a byte slice with serialized changes made to the block device backend
 ** The format should have the smallest possible overhead
  */
-func (bd *blockDevice) Serialize() ([]blockDeviceChange, error) {
+func (bd *blockDevice) Serialize() (*bytes.Buffer, error) {
 	if !bd.Initialized {
 		return nil, fmt.Errorf("Block device needs to be initialized first")
 	}
+	buf := new(bytes.Buffer)
+	// err := binary.Write(buf, binary.LittleEndian, bd.Changes)
+	// flatten the map to a values only
+	values := make([]blockDeviceChange, 0, len(bd.Changes))
+	for _, val := range bd.Changes {
+		values = append(values, val)
+	}
+	if err := binary.Write(buf, binary.LittleEndian, int64(len(values))); err != nil {
+		return nil, err
+	}
+	err := binary.Write(buf, binary.LittleEndian, values)
+	if err != nil {
+		return nil, err
+	}
 
-	// return []blockDeviceChange{blockDeviceChange{Offset: 0, Data: bd.Data}}, nil
-	return nil, nil
+	return buf, nil
 }
 
 /*
@@ -147,15 +161,26 @@ i.e. this is a _factory_ method)
 ** Creates a new block device backend
 ** It will deserialize the changes and load them on top of the initial data
 */
-func Deserialize(changes []blockDeviceChange, initData []byte) (blockDevice, error) {
+func Deserialize(buffer *bytes.Buffer, initData []byte) (blockDevice, error) {
 	bd := blockDevice{}
 	bd.Initialize(initData)
-	for _, change := range changes {
-		err := bd.WriteAt(change.Offset, change.Data[:])
-		if err != nil {
-			return bd, err
-		}
+
+	var length int64
+	if err := binary.Read(buffer, binary.LittleEndian, &length); err != nil {
+		return bd, err
 	}
+
+	decodedValues := make([]blockDeviceChange, length)
+	if err := binary.Read(buffer, binary.LittleEndian, &decodedValues); err != nil {
+		return bd, err
+	}
+
+	bd.Changes = make(map[int64]blockDeviceChange, length)
+	for _, value := range decodedValues {
+		offset := value.Offset / BLOCK_SIZE
+		bd.Changes[offset] = value
+	}
+
 	return bd, nil
 }
 
@@ -164,16 +189,11 @@ func Deserialize(changes []blockDeviceChange, initData []byte) (blockDevice, err
 * with the changes layed "on top" of it.
  */
 func (bd *blockDevice) Dump() []byte {
-	// fmt.Printf("Dump(): length: %d \n", len(bd.Changes))
-	// fmt.Printf("Dump() : %d \n", len(bd.Changes))
 	c := make([]byte, len(bd.Data))
 	copy(c, bd.Data)
 	for _, change := range bd.Changes {
-		// fmt.Printf("Dump(): k: %d, BLOCK_SIZE: %d, change.Offset: %d, change.Data: %v\n", k, BLOCK_SIZE, change.Offset, change.Data)
 		offset := change.Offset
-		// fmt.Printf("Dump() before copy: c: %v\n", c)
 		copy(c[offset:], change.Data[:])
-		// fmt.Printf("Dump()  after copy: c: %v\n", c)
 	}
 	return c
 }
